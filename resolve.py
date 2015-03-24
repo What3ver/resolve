@@ -36,9 +36,6 @@ from casa import ms as mst
 from casa import image as ia 
 import casa
 import pyfits
-import sys
-import datetime
-
 
 #a few global constants
 q = 1e-15
@@ -269,12 +266,12 @@ def resolve(ms, imsize, cellsize, algorithm = 'ln-map', init_type_s = 'dirty',\
         save_results(np.exp(m_I.val),"TI exp(Starting guess)",\
             'resolve_output_' + str(params.save) + '/m_reconstructions/' +\
             params.save + "_expm0", rho0 = rho0)
-        write_output_to_fits(np.transpose(np.exp(m_I.val)/rho0),params, notifier='0', mode='I')
+        write_output_to_fits(np.transpose(np.exp(m_I.val)/rho0),params.mode='I')
         if freq == 'wideband':
            save_results(m_a.val,"Alpha Starting guess",\
             'resolve_output_' + str(params.save) + '/m_reconstructions/' +\
             params.save + "_ma0", rho0 = rho0) 
-           write_output_to_fits(np.transpose(m_I.val/rho0),params, notifier='0', mode='a') 
+           write_output_to_fits(np.transpose(m_I.val/rho0),params,mode='a') 
            
     # Begin: Start Filter *****************************************************
 
@@ -310,7 +307,16 @@ def resolve(ms, imsize, cellsize, algorithm = 'ln-map', init_type_s = 'dirty',\
             
     elif params.algorithm == 'wf':
         
-        logger.failure('Wiener Filter not yet implemented')
+        if params.freq is not 'wideband':
+            #single-band I-Filter
+            t1 = time()
+            m_I, p_I = wienerfilter(d, m_I, pspec, N, R, logger, rho0, k_space, \
+                params, numparams)
+            t2 = time()
+            
+        else:
+            logger.failure('No wideband Wiener Filter.')
+        
         
     elif params.algorithm =='gibbsenergy':
         
@@ -332,13 +338,13 @@ def resolve(ms, imsize, cellsize, algorithm = 'ln-map', init_type_s = 'dirty',\
         save_results(np.exp(m_I.val),"exp(Solution m)",\
             'resolve_output_' + str(params.save) + '/m_reconstructions/' + \
             params.save + "_expmfinal", rho0 = rho0)
-        write_output_to_fits(np.transpose(np.exp(m_I.val)/rho0),params, notifier='final',mode='I')
+        write_output_to_fits(np.transpose(np.exp(m_I.val)/rho0),params,mode='I')
         
         if params.freq == 'wideband':
             save_results(m_a.val,"Solution a",\
                 'resolve_output_' + str(params.save) + '/m_reconstructions/' +\
                 params.save + "_mafinal", rho0 = rho0)
-            write_output_to_fits(np.transpose(m_a.val),params, notifier ='final', mode='a')
+            write_output_to_fits(np.transpose(m_a.val),params,mode='a')
             
         save_results(kindex,"final power spectrum",\
                      'resolve_output_' + str(params.save) + \
@@ -502,7 +508,7 @@ def datasetup(params, logger):
             uvcov = field(d_space,val=np.ones(len(u), dtype = np.complex128))
             db = R.adjoint_times(uvcov) * s_space.vol[0] * s_space.vol[1]       
             save_results(db,"dirty beam", 'resolve_output_' +str(params.save)+\
-                '/general/' + params.save + "_db")
+                '/general' + params.save + "_db")
             
             # plot the dirty image
             save_results(di,"dirty image",'resolve_output_' +str(params.save)+\
@@ -595,15 +601,13 @@ def mapfilter_I(d, m, pspec, N, R, logger, rho0, k_space, params, numparams,\
                     'resolve_output_' + str(params.save) +\
                     '/m_reconstructions/' + params.save + "_expm" +\
                     str(wideband_git) + "_" + str(git), rho0 = rho0)
-                write_output_to_fits(np.transpose(exp(m.val)/rho0),params, \
-                    notifier = str(wideband_git) + "_" + str(git),mode = 'I')
+                write_output_to_fits(np.transpose(exp(m.val)/rho0),params, mode = 'I')
             else:
                 save_results(exp(m.val), "map, iter #" + str(git), \
                     'resolve_output_' + str(params.save) +\
                     '/m_reconstructions/' + params.save + "_expm" + str(git), \
                     rho0 = rho0)
-                write_output_to_fits(np.transpose(exp(m.val)/rho0),params,\
-                notifier = str(git), mode='I')
+                write_output_to_fits(np.transpose(exp(m.val)/rho0),params, mode='I')
 
         logger.header2("Computing the power spectrum.\n")
 
@@ -660,8 +664,7 @@ def mapfilter_I(d, m, pspec, N, R, logger, rho0, k_space, params, numparams,\
                 pl.loglog(kindex, plist[i], label="iter" + str(i))
             pl.title("Global iteration pspec progress")
             pl.legend()
-            pl.savefig('resolve_output_' + str(params.save) + \
-                "/p_reconstructions/" + params.save + "_powevol.png")
+            pl.savefig("p_reconstructions/" + params.save + "_powevol.png")
             pl.close()
         
         # convergence test in map reconstruction
@@ -767,8 +770,7 @@ def mapfilter_a(d, m, pspec, N, R, logger, rho0, k_space, params, numparams,\
                 'resolve_output_' + str(params.save) +\
                 "/m_reconstructions/" + params.save + "_ma" + \
                 str(wideband_git) + "_" + str(git), rho0 = rho0)
-            write_output_to_fits(np.transpose(m.val),params, \
-            notifier = str(wideband_git) + "_" + str(git), mode='a')
+            write_output_to_fits(np.transpose(m.val),params,mode='a')
         
 
         logger.header2("Computing the power spectrum.\n")
@@ -860,11 +862,160 @@ def mapfilter_a(d, m, pspec, N, R, logger, rho0, k_space, params, numparams,\
             "/D_reconstructions/" + params.save + "_Da")
 
     return m, pspec
+    
+def wienerfilter(d, m, pspec, N, R, logger, rho0, k_space, params, numparams,\
+    *args):
+    """
+    """
+
+    logger.header1("Begin total intensity Wiener filtering.")
+    logger.warn('Warning: Wiener Filter possibly not suited well for radio' +\
+        'applications')
+      
+    s_space = m.domain
+    kindex = k_space.get_power_indices()[0]
+         
+    # Sets the alpha prior parameter for all modes
+    if not numparams.alpha_prior is None:
+        alpha = numparams.alpha_prior
+    else:
+        alpha = np.ones(np.shape(kindex))
+        
+    # Defines important operators
+    S = power_operator(k_space, spec=pspec, bare=True)
+    M = M_operator(domain=s_space, sym=True, imp=True, para=[N, R])
+    j = R.adjoint_times(N.inverse_times(d))
+    D = propagator_operator(S=S,M=M,R=R,N=N)
 
     
-#------------------------------------------------------------------------------
+    # diagnostic plots
+
+    if params.save:
+        save_results(j,"j",'resolve_output_' + str(params.save) +\
+                '/general/' + params.save + '_WF_j',rho0 = rho0)
+
+    # iteration parameters
+    convergence = 0
+    git = 1
+    plist = [pspec]
+    mlist = [m]
+    
+
+    while git <= numparams.global_iter:
+        """
+        Global filter loop.
+        """
+        logger.header2("Starting global iteration #" + str(git) + "\n")
+
+        # update power operator after each iteration step
+        S.set_power(newspec=pspec,bare=True)
+          
+      
+        #run nifty minimizer steepest descent class
+        logger.header2("Computing the WF estimate.\n")
+
+        mold = m
+        
+        m = D(j)
+           
+        if params.save:
+            save_results(m.val, "map, iter #" + str(git), \
+                    'resolve_output_' + str(params.save) +\
+                    '/m_reconstructions/' + params.save + "_WF_m" + str(git), \
+                    rho0 = rho0)
+            write_output_to_fits(np.transpose(m.val/rho0),params, mode='I')
+
+        logger.header2("Computing the power spectrum.\n")
+
+        #extra loop to take care of possible nans in PS calculation
+        psloop = True
+        M0 = numparams.M0_start
+        while psloop:
+            
+            D.para = [S, M, m, j, M0, rho0, params, numparams]
+            
+            Sk = projection_operator(domain=k_space)
+            #bare=True?
+            logger.message('Calculating Dhat.')
+            D_hathat = D.hathat(domain=s_space.get_codomain(),\
+                ncpu=numparams.ncpu,nrun=numparams.nrun)
+            logger.message('Success.')
+
+            pspec = infer_power(m,domain=Sk.domain,Sk=Sk,D=D_hathat,\
+                q=1E-42,alpha=alpha,perception=(1,0),smoothness=True,var=\
+                numparams.smoothing, bare=True)
+
+            if np.any(pspec == False):
+                print 'D not positive definite, try increasing eta.'
+                if M0 == 0:
+                    M0 += 0.1
+                M0 *= 1e6
+                D.para = [S, M, m, j, M0, rho0, params, numparams]
+            else:
+                psloop = False
+            
+        logger.message("    Current M0:  " + str(D.para[4])+ '\n.')
 
 
+        mlist.append(m)
+        plist.append(pspec)
+
+        
+        if params.save:
+
+            save_results(kindex,"ps, iter #" + str(git), \
+                'resolve_output_' + str(params.save) +\
+                "/p_reconstructions/" + params.save + "_WF_p" + str(git), \
+                value2=pspec,log='loglog')
+            
+            # powevol plot needs to be done in place
+            pl.figure()
+            for i in range(len(plist)):
+                pl.loglog(kindex, plist[i], label="iter" + str(i))
+            pl.title("Global iteration pspec progress")
+            pl.legend()
+            pl.savefig("p_reconstructions/" + params.save + "_powevol.png")
+            pl.close()
+        
+        # convergence test in map reconstruction
+        if np.max(np.abs(m - mold)) < params.map_conv:
+            logger.message('Image converged.')
+            convergence += 1
+        
+        # convergence test in power spectrum reconstruction 
+        if np.max(np.abs(np.log(pspec)/np.log(S.get_power()))) < np.log(1e-1):
+            logger.message('Power spectrum converged.')
+            convergence += 1
+        
+        #global convergence test
+        if convergence >= 4:
+            logger.message('Global convergence achieved at iteration' + \
+                str(git) + '.')
+            if params.uncertainty:
+                logger.message('Calculating uncertainty map as requested.')
+                D_hat = D.hat(domain=s_space,\
+                ncpu=numparams.ncpu,nrun=numparams.nrun)
+                save_results(D_hat.val,"relative uncertainty", \
+                    'resolve_output_' + str(params.save) +\
+                    "/D_reconstructions/" + params.save + "_D")
+                
+                
+            return m, pspec
+
+        git += 1
+    
+    if params.uncertainty:
+        logger.message('Calculating uncertainty map as requested.')
+        D_hat = D.hat(domain=s_space,\
+        ncpu=numparams.ncpu,nrun=numparams.nrun)
+        save_results(D_hat.val,"relative uncertainty", \
+            'resolve_output_' + str(params.save) +\
+            "/D_reconstructions/" + params.save + "_D")
+
+    return m, pspec
+
+#-------------------------single band operators--------------------------------
+        
 class N_operator(operator):
     """
     Wrapper around a standard Noise operator. Handles radio astronomical flags.
@@ -890,9 +1041,7 @@ class N_operator(operator):
 
         Ntemp = diagonal_operator(domain=self.domain, diag = sigma**2)
 
-        return mask * Ntemp.inverse_times(x)
-        
-#-------------------------single band operators--------------------------------
+        return mask * Ntemp.inverse_times(x)        
         
 class M_operator(operator):
     """
@@ -1514,8 +1663,8 @@ def simulate(params, simparams, logger):
     np.random.seed()    
     
     # compact signal
-    Ip = np.zeros((simparams.simpix,simparams.simpix))
     if simparams.compact:
+        Ip = np.zeros((simparams.simpix,simparams.simpix))
         for i in range(simparams.nsources):
                Ip[np.random.randint(0,high=simparams.simpix),\
                np.random.randint(0,high=simparams.simpix)] = \
@@ -1525,9 +1674,8 @@ def simulate(params, simparams, logger):
     if params.save:      
         save_results(exp(I),'simulated extended signal','resolve_output_' + \
             str(params.save) + "/general/" + params.save + '_expsimI')
-        if simparams.compact:
-            save_results(Ip,'simulated compact signal','resolve_output_' + \
-                str(params.save) + "/general/" + params.save + '_expsimIp')
+        save_results(Ip,'simulated compact signal','resolve_output_' + \
+            str(params.save) + "/general/" + params.save + '_expsimIp')
     
     if params.save:
         # maximum k-mode and resolution of data
@@ -1559,9 +1707,6 @@ def simulate(params, simparams, logger):
         save_results(abs(sig.val) / abs(n.val),'Signal to noise', \
            'resolve_output_' + str(params.save) + \
            "/general/" + params.save + '_StoN',log ='semilog')
-        save_results(np.exp(I) + Ip,'Signal', \
-           'resolve_output_' + str(params.save) + \
-           "/general/" + params.save + '_signal')
 
     d = R(exp(I) + Ip) + n
     
@@ -1612,79 +1757,61 @@ def parse_input_file(infile):
     return params, numparams
 
 
-def write_output_to_fits(m, params, notifier='',mode='I'):
+def write_output_to_fits(m, params, mode='I'):
     """
     """
 
     hdu_main = pyfits.PrimaryHDU(m)
-    
     try:
         generate_fitsheader(hdu_main, params)
     except:
-        print "Warning: There was a problem generating the FITS header, no " + \
+        print "Warning: There was a problem generating the header, no " + \
             "header information stored!"
         print "Unexpected error:", sys.exc_info()[0]
     hdu_list = pyfits.HDUList([hdu_main])
     if mode == 'I':
         hdu_list.writeto('resolve_output_' + str(params.save) +\
-                '/' + str(params.save) + '_' + 'expm' + str(notifier) + '.fits', clobber=True)
+                '/params.save_' + 'expm' + '.fits', clobber=True)
     else:
         hdu_list.writeto('resolve_output_' + str(params.save) +\
-                '/' + str(params.save) + '_' + 'a' + str(notifier) + '.fits', clobber=True)
+                '/params.save_' + 'a' + '.fits', clobber=True)
 
 
-def generate_fitsheader(hdu, params):
+def generate_fitsheader(hdu, summary, params):
     """
     """
 
-    
     today = datetime.datetime.today()
-    
-    #hdu.header = inhead.copy()
-    
+    hdu.header = inhead.copy()
+
     hdu.header.update('ORIGIN', 'resolve.py', 'Origin of the data set')
-    
     hdu.header.update('DATE', str(today), 'Date when the file was created')
-    
     hdu.header.update('NAXIS', 2,
                       'Number of axes in the data array, must be 2')
-
-    hdu.header.update('BUNIT','JY/PIXEL')
                       
     hdu.header.update('NAXIS1', params.imsize,
                       'Length of the RA axis')
-    
-    hdu.header.update('CTYPE1', 'RA--SIN', 'Axis type')
-    
-    hdu.header.update('CUNIT1', 'RAD', 'Axis units')
-    
+    hdu.header.update('CTYPE1', 'Ra', 'Axis type')
+    hdu.header.update('CUNIT1', 'rad', 'Axis units')
     # In FITS, the first pixel is 1, not 0!!!
-    hdu.header.update('CRPIX1', params.imsize/2, 'Reference pixel')
-    
-    hdu.header.update('CRVAL1', params.summary['field_0']['direction']\
+    hdu.header.update('CRPIX1', imsize/2, 'Reference pixel')
+    hdu.header.update('CRVAL1', params.summary['field_0']['code']['direction']\
     ['m0']['value'], 'Reference value')
-    
     hdu.header.update('CDELT1', params.cellsize, 'Size of pixel bin')
     
     hdu.header.update('NAXIS2', params.imsize,
                       'Length of the RA axis')
-    
-    hdu.header.update('CTYPE2', 'DEC-SIN', 'Axis type')
-    
-    hdu.header.update('CUNIT2', 'RAD', 'Axis units')
-    
+    hdu.header.update('CTYPE2', 'Dec', 'Axis type')
+    hdu.header.update('CUNIT2', 'rad', 'Axis units')
     # In FITS, the first pixel is 1, not 0!!!
-    hdu.header.update('CRPIX2', params.imsize/2, 'Reference pixel')
-    
-    hdu.header.update('CRVAL2', params.summary['field_0']['direction']\
+    hdu.header.update('CRPIX2', imsize/2, 'Reference pixel')
+    hdu.header.update('CRVAL2', params.summary['field_0']['code']['direction']\
     ['m1']['value'], 'Reference value')
-    
     hdu.header.update('CDELT2', params.cellsize, 'Size of pixel bin')
-    
+
     hdu.header.add_history('RESOLVE: Reconstruction performed by ' +
                            'resolve.py.')
 
-    
     hdu.header.__delitem__('NAXIS4')
     hdu.header.__delitem__('CTYPE4')
     hdu.header.__delitem__('CRVAL4')
