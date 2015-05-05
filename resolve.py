@@ -2,8 +2,7 @@
 resolve.py
 Written by Henrik Junklewitz
 
-Resolve.py defines the main function that runs RESOLVE on a measurement 
-set with radio interferometric data.
+RESOLVE is...
 
 Copyright 2014 Henrik Junklewitz
 
@@ -26,6 +25,7 @@ from time import time
 from subprocess import call
 
 #import necessary modules
+import scipy.stats as sc
 import pylab as pl
 import numpy as np
 from nifty import *
@@ -36,16 +36,11 @@ from nifty import nifty_tools as nt
 from casa import ms as mst
 from casa import image as ia 
 import casa
-import pyfits
-import sys
-import datetime
-
 
 #a few global constants
 q = 1e-15
 C = 299792458
 asec2rad = 4.84813681e-6
-
 
 
 def resolve(ms, imsize, cellsize, algorithm = 'ln-map', init_type_s = 'dirty',\
@@ -146,7 +141,9 @@ def resolve(ms, imsize, cellsize, algorithm = 'ln-map', init_type_s = 'dirty',\
         
         simparams = simparameters(params, kwargs)
                                                     
-    # Prepare a number of diagnostics if requested
+    # Prepare a number of diagnostics if requ
+    global saveit                                 
+    saveit = params.save             
     if params.plot:
         pl.ion()
     else:
@@ -197,7 +194,8 @@ def resolve(ms, imsize, cellsize, algorithm = 'ln-map', init_type_s = 'dirty',\
                       val=np.load('userimage.npy')/params.barea)
 
     
-    rho0 = np.mean(mtemp.val[np.where(mtemp.val>=np.max(mtemp.val) / 4)])
+  #  rho0 = np.mean(mtemp.val[np.where(mtemp.val>=np.max(mtemp.val) / 4)])
+    rho0 = 1.0
     logger.message('rho0: ' + str(rho0))
     if rho0 < 0:
         logger.warn('Monopole level of starting guess negative. Probably due \
@@ -270,15 +268,12 @@ def resolve(ms, imsize, cellsize, algorithm = 'ln-map', init_type_s = 'dirty',\
         save_results(np.exp(m_I.val),"TI exp(Starting guess)",\
             'resolve_output_' + str(params.save) + '/m_reconstructions/' +\
             params.save + "_expm0", rho0 = rho0)
-        write_output_to_fits(np.transpose(np.exp(m_I.val)/rho0),params, notifier='0', mode='I')
         if freq == 'wideband':
            save_results(m_a.val,"Alpha Starting guess",\
             'resolve_output_' + str(params.save) + '/m_reconstructions/' +\
             params.save + "_ma0", rho0 = rho0) 
-           write_output_to_fits(np.transpose(m_I.val/rho0),params, notifier='0', mode='a') 
-           
+            
     # Begin: Start Filter *****************************************************
-
     if params.algorithm == 'ln-map':
         
         logger.header1('Starting RESOLVE.')
@@ -286,8 +281,18 @@ def resolve(ms, imsize, cellsize, algorithm = 'ln-map', init_type_s = 'dirty',\
         if params.freq is not 'wideband':
             #single-band I-Filter
             t1 = time()
-            m_I, p_I = mapfilter_I(d, m_I, pspec, N, R, logger, rho0, k_space, \
-                params, numparams)
+            if params.map_algo == "sd":
+                m_I, p_I = mapfilter_I(d, m_I, pspec, N, R, logger, rho0, k_space, \
+                    params, numparams)
+            if params.map_algo == "up":
+               # params.map_algo = "sd"
+               # iter_old = numparams.global_iter 
+               # numparams.global_iter = 1
+               # m_I, p_I = mapfilter_I(d, m_I, pspec, N, R, logger, rho0, k_space, \
+               #     params, numparams)
+               # numparams.global_iter = iter_old
+                m_I,u_I, p_I = mapfilter_Ip(d, m_I,pspec, N, R, logger, rho0, k_space, \
+                    params, numparams)
             t2 = time()
             
         else:
@@ -333,13 +338,11 @@ def resolve(ms, imsize, cellsize, algorithm = 'ln-map', init_type_s = 'dirty',\
         save_results(np.exp(m_I.val),"exp(Solution m)",\
             'resolve_output_' + str(params.save) + '/m_reconstructions/' + \
             params.save + "_expmfinal", rho0 = rho0)
-        write_output_to_fits(np.transpose(np.exp(m_I.val)/rho0),params, notifier='final',mode='I')
         
         if params.freq == 'wideband':
             save_results(m_a.val,"Solution a",\
                 'resolve_output_' + str(params.save) + '/m_reconstructions/' +\
                 params.save + "_mafinal", rho0 = rho0)
-            write_output_to_fits(np.transpose(m_a.val),params, notifier ='final', mode='a')
             
         save_results(kindex,"final power spectrum",\
                      'resolve_output_' + str(params.save) + \
@@ -364,14 +367,13 @@ def datasetup(params, logger):
     logger.header2("Running data setup.")
 
     if params.noise_est == 'simple':
-        vis, sigma, u, v, freqs, nchan, nspw, nvis, summary = \
+        vis, sigma, u, v, freqs, nchan, nspw, nvis = \
             read_data_from_ms(params.ms, noise_est = True)
     else:
-        vis, sigma, u, v, freqs, nchan, nspw, nvis, summary = \
+        vis, sigma, u, v, freqs, nchan, nspw, nvis = \
             read_data_from_ms(params.ms)
-    
-    params.summary = summary
-    
+        
+        
     # single-band imaging
     if not params.freq == 'wideband':
         sspw,schan = params.freq[0], params.freq[1]
@@ -503,7 +505,7 @@ def datasetup(params, logger):
             uvcov = field(d_space,val=np.ones(len(u), dtype = np.complex128))
             db = R.adjoint_times(uvcov) * s_space.vol[0] * s_space.vol[1]       
             save_results(db,"dirty beam", 'resolve_output_' +str(params.save)+\
-                '/general/' + params.save + "_db")
+                '/general' + params.save + "_db")
             
             # plot the dirty image
             save_results(di,"dirty image",'resolve_output_' +str(params.save)+\
@@ -511,8 +513,6 @@ def datasetup(params, logger):
 
         return  d, N, R, di, d_space, s_space
     
-
-
 def mapfilter_I(d, m, pspec, N, R, logger, rho0, k_space, params, numparams,\
     *args):
     """
@@ -561,7 +561,6 @@ def mapfilter_I(d, m, pspec, N, R, logger, rho0, k_space, params, numparams,\
     git = 1
     plist = [pspec]
     mlist = [m]
-    
 
     while git <= numparams.global_iter:
         """
@@ -589,22 +588,19 @@ def mapfilter_I(d, m, pspec, N, R, logger, rho0, k_space, params, numparams,\
                 limii=numparams.map_iter)[0]
         elif params.map_algo == 'lbfgs':
             logger.failure('lbfgs algorithm not yet implemented.')
-           
+                
         if params.save:
             if params.freq == 'wideband':
                 save_results(exp(m.val), "map, iter #" + str(git), \
                     'resolve_output_' + str(params.save) +\
                     '/m_reconstructions/' + params.save + "_expm" +\
                     str(wideband_git) + "_" + str(git), rho0 = rho0)
-                write_output_to_fits(np.transpose(exp(m.val)/rho0),params, \
-                    notifier = str(wideband_git) + "_" + str(git),mode = 'I')
             else:
                 save_results(exp(m.val), "map, iter #" + str(git), \
                     'resolve_output_' + str(params.save) +\
                     '/m_reconstructions/' + params.save + "_expm" + str(git), \
-                    rho0 = rho0)
-                write_output_to_fits(np.transpose(exp(m.val)/rho0),params,\
-                notifier = str(git), mode='I')
+                    rho0 = rho0)    
+        
 
         logger.header2("Computing the power spectrum.\n")
 
@@ -661,8 +657,7 @@ def mapfilter_I(d, m, pspec, N, R, logger, rho0, k_space, params, numparams,\
                 pl.loglog(kindex, plist[i], label="iter" + str(i))
             pl.title("Global iteration pspec progress")
             pl.legend()
-            pl.savefig('resolve_output_' + str(params.save) + \
-                "/p_reconstructions/" + params.save + "_powevol.png")
+            pl.savefig("resolve_output_" + str(params.save) +"/p_reconstructions/" + params.save + "_powevol.png")
             pl.close()
         
         # convergence test in map reconstruction
@@ -687,7 +682,6 @@ def mapfilter_I(d, m, pspec, N, R, logger, rho0, k_space, params, numparams,\
                     'resolve_output_' + str(params.save) +\
                     "/D_reconstructions/" + params.save + "_D")
                 
-                
             return m, pspec
 
         git += 1
@@ -702,6 +696,288 @@ def mapfilter_I(d, m, pspec, N, R, logger, rho0, k_space, params, numparams,\
 
     return m, pspec
 
+def mapfilter_Ip(d, m, pspec, N, R, logger, rho0, k_space, params, numparams,\
+    *args):
+    """
+    """
+
+    logger.header1("Begin total intensity filtering")  
+      
+    s_space = m.domain
+    kindex = k_space.get_power_indices()[0]
+         
+    # Sets the alpha prior parameter for all modes
+    if not numparams.alpha_prior is None:
+        alpha = numparams.alpha_prior
+    else:
+        alpha = np.ones(np.shape(kindex))
+        
+    # Defines important operators
+    S = power_operator(k_space, spec=pspec, bare=True)
+    M = M_operator(domain=s_space, sym=True, imp=True, para=[N, R])
+    j = R.adjoint_times(N.inverse_times(d))
+    D = D_operator(domain=s_space, sym=True, imp=True, para=[S, M, m, j, \
+        numparams.M0_start, rho0, params, numparams])
+
+    
+    # diagnostic plots
+        #u0 = np.zeros((params.imsize,params.imsize))
+
+    m0 = getmstart(params,d,m,R,N)
+    u0 = getustart(params,d,m,R,N)
+    m = field(s_space, val = m0)
+    u = field(s_space, val = u0)   
+
+    save_results(u,"u0",'resolve_output_' + str(params.save) +\
+                '/general/' + params.save + '_u0',rho0 = rho0)
+
+    # iteration parameters
+    convergence = 0
+    git = 1
+    plist = [pspec]
+    mlist = [m]
+    
+    B = 1.5
+    NU = 0.00001
+    
+
+    while git <= numparams.global_iter:
+        """
+        Global filter loop.
+        """
+        logger.header2("Starting global up iteration #" + str(git) + "\n")
+
+        # update power operator after each iteration step
+        S.set_power(newspec=pspec,bare=True)
+          
+        # uodate operator and optimizer arguments  
+        D.para = [S, M, m, j, numparams.M0_start, rho0, params, numparams]
+
+        #run nifty minimizer steepest descent class
+        logger.header2("Computing the MAP estimate.\n")
+
+        mold = m
+        uold = u
+
+        args = (j, S, M, rho0, B, NU,m,u)
+        en = energy_up(args) 
+        minimize = nt.steepest_descent(en.egg_s,spam=callbackfunc_m,note=True)
+        m = minimize(x0=m, alpha=numparams.map_alpha, \
+            tol=0.01*numparams.map_tol, clevel=numparams.map_clevel, \
+            limii=numparams.map_iter)[0]
+        en.seff = m
+        minimize = nt.steepest_descent(en.egg_u,spam=callbackfunc_u,note=True)
+        u = minimize(x0=u, alpha=numparams.map_alpha, \
+            tol=0.01*numparams.map_tol, clevel=numparams.map_clevel, \
+            limii=numparams.map_iter)[0]
+        en.ueff = u          
+       # elif params.map_algo == 'u': #use pointsource NEW up definieren
+       #     args = (j, S, M, rho0, B, NU,u)
+       #     en = energy_u(args) 
+       #     minimize = nt.steepest_descent(en.egg_u,spam=callbackfunc_u,note=True)
+       #     u = minimize(x0=u, alpha=numparams.map_alpha, \
+       #         tol=numparams.map_tol, clevel=numparams.map_clevel, \
+       #         limii=numparams.map_iter)[0]   
+                
+        if params.save:
+            save_results(exp(m.val), "map, iter #" + str(git), \
+                    'resolve_output_' + str(params.save) +\
+                    '/m_reconstructions/' + params.save + "_expm" + str(git)+"_up", \
+                    rho0 = rho0)
+                
+            save_results(exp(u.val), "map, iter #" + str(git), \
+                    'resolve_output_' + str(params.save) +\
+                    '/m_reconstructions/' + params.save + "_expu" + str(git)+"_up", \
+                    rho0 = rho0)
+            
+            save_results(exp(u.val)+exp(m.val), "map, iter #" + str(git), \
+                    'resolve_output_' + str(params.save) +\
+                    '/m_reconstructions/' + params.save + "_expum" + str(git)+"_up", \
+                    rho0 = rho0)
+                    
+            u_smooth = u.smooth(4.e-6)
+            save_results(exp(u_smooth.val), "map, iter #" + str(git), \
+                    'resolve_output_' + str(params.save) +\
+                    '/m_reconstructions/' + params.save + "_expu" + str(git)+"_up_smooth", \
+                    rho0 = rho0)
+                    
+                
+
+        logger.header2("Computing the power spectrum.\n")
+
+        #extra loop to take care of possible nans in PS calculation
+        psloop = True
+        M0 = numparams.M0_start
+        while psloop:
+            
+            D.para = [S, M, m, j, M0, rho0, params, numparams]
+            
+            Sk = projection_operator(domain=k_space)
+            #bare=True?
+            logger.message('Calculating Dhat.')
+            D_hathat = D.hathat(domain=s_space.get_codomain(),\
+                ncpu=numparams.ncpu,nrun=numparams.nrun)
+            logger.message('Success.')
+
+            pspec = infer_power(m,domain=Sk.domain,Sk=Sk,D=D_hathat,\
+                q=1E-42,alpha=alpha,perception=(1,0),smoothness=True,var=\
+                numparams.smoothing, bare=True)
+
+            if np.any(pspec == False):
+                print 'D not positive definite, try increasing eta.'
+                if M0 == 0:
+                    M0 += 0.1
+                M0 *= 1e6
+                D.para = [S, M, m, j, M0, rho0, params, numparams]
+            else:
+                psloop = False
+            
+        logger.message("    Current M0:  " + str(D.para[4])+ '\n.')
+
+
+        mlist.append(m)
+        plist.append(pspec)
+
+        
+        if params.save:
+            save_results(kindex,"ps, iter #" + str(git), \
+                'resolve_output_' + str(params.save) +\
+                "/p_reconstructions/" + params.save + "_p" + str(git)+"_up", \
+                value2=pspec,log='loglog')
+            
+            # powevol plot needs to be done in place
+            pl.figure()
+            for i in range(len(plist)):
+                pl.loglog(kindex, plist[i], label="iter" + str(i))
+            pl.title("Global iteration pspec progress")
+            pl.legend()
+            pl.savefig("resolve_output_" + str(params.save) +"/p_reconstructions/" + params.save + "_up_powevol.png")
+            pl.close()
+        
+        # convergence test in map reconstruction
+        if np.max(np.abs(m - mold)) < params.map_conv and np.max(np.abs(u - uold)) < 0.01*params.map_conv:
+            logger.message('Image converged.')
+            convergence += 1
+            differ(u_simed,u.val,params.save)
+        
+        # convergence test in power spectrum reconstruction 
+        if np.max(np.abs(np.log(pspec)/np.log(S.get_power()))) < np.log(1e-1):
+            logger.message('Power spectrum converged.')
+            convergence += 1
+        
+        #global convergence test
+        if convergence >= 4:
+            logger.message('Global convergence achieved at iteration' + \
+                str(git) + '.')
+            if params.uncertainty:
+                logger.message('Calculating uncertainty map as requested.')
+                D_hat = D.hat(domain=s_space,\
+                ncpu=numparams.ncpu,nrun=numparams.nrun)
+                save_results(D_hat.val,"relative uncertainty", \
+                    'resolve_output_' + str(params.save) +\
+                    "/D_reconstructions/" + params.save + "_D")
+                
+            return m,u, pspec
+
+        git += 1
+    
+    if params.uncertainty:
+        logger.message('Calculating uncertainty map as requested.')
+        D_hat = D.hat(domain=s_space,\
+        ncpu=numparams.ncpu,nrun=numparams.nrun)
+        save_results(D_hat.val,"relative uncertainty", \
+            'resolve_output_' + str(params.save) +\
+            "/D_reconstructions/" + params.save + "_D")
+
+    return m,u, pspec
+    
+def getmstart(params,du,mold,R,N):
+    #simed = True
+    uvrange_m = True
+    simed = False
+    if simed:
+        m = I0
+    elif uvrange_m:
+        m = np.abs(di_m)
+    else:        
+        m = mold
+    return m
+
+def getustart(params,di,m,R,N):
+    #nonneg = True
+    nonneg = False    
+    res = False
+    uvrange_u = True
+    simed  =False
+    if nonneg:
+        j =R.adjoint_times(N.inverse_times(di))
+        u0 =j-m
+        for i in range(params.imsize):
+            for k in range(params.imsize):
+                if u0.val[i][k]<0:
+                    u0.val[i][k] = 0
+    elif uvrange_u:
+        u0=np.abs(di_u)
+    elif res:
+        u0=di_res 
+    elif simed:
+        u0=u_simed 
+    else:
+        u0 = np.zeros((params.imsize,params.imsize))
+   
+    return u0
+    
+def differ(u0,u,save):
+    nop = len(u0[u0>0])
+    flux = 0
+    maxamp = 0
+    distance = 0    
+    #par = np.zeros(nop)
+    #print(u0)
+    for (x,y),value  in np.ndenumerate(u0):
+        if value > 0:
+            dis = get_close(x,y,u0)/2
+            flux_n,maxamp_n,distance_n = get_stuff(dis,x,y,value,u)
+            #print(flux_n,maxamp_n,distance, dis)
+            flux += flux_n
+            maxamp += maxamp_n
+            distance += distance_n
+    flux = flux/nop
+    maxamp = maxamp/nop
+    distance = distance/nop
+    f = open(save+'_conmeasure.txt','w')
+    f.write('Total flux: '+str(flux)+'\n Maximal amplitude: '+str(maxamp)+'\n Distance: '+str(distance) +'\n') 
+    f.close()
+            
+
+def get_close(a,b,u0):
+    dis = len(u0)**2
+    for (x,y),value  in np.ndenumerate(u0):
+        if value > 0 and not (x == a and y == b): #funktioniert !
+            #print (x, a, y, b)
+            dis_new = dist(x,a,y,b)  
+            if dis_new < dis:
+                dis = dis_new
+    return dis
+            
+
+def dist(i0,i1,j0,j1):
+    return np.sqrt((i0-i1)**2 + (j0-j1)**2)
+
+def get_stuff(dis,a,b,c,u):
+    flux = 0
+    maxamp = 0
+    maxampx = 0
+    maxampy = 0
+    for (x,y),value in np.ndenumerate(u):
+        if dist(x,a,y,b)<=dis:
+            flux += value 
+            if value > maxamp :
+                maxamp = value
+                maxampx = x
+                maxampy = y
+    distance =dist(a,maxampx,b,maxampy)
+    return flux/c, maxamp/c, distance
 
 def mapfilter_a(d, m, pspec, N, R, logger, rho0, k_space, params, numparams,\
     m_I, wideband_git):
@@ -768,8 +1044,6 @@ def mapfilter_a(d, m, pspec, N, R, logger, rho0, k_space, params, numparams,\
                 'resolve_output_' + str(params.save) +\
                 "/m_reconstructions/" + params.save + "_ma" + \
                 str(wideband_git) + "_" + str(git), rho0 = rho0)
-            write_output_to_fits(np.transpose(m.val),params, \
-            notifier = str(wideband_git) + "_" + str(git), mode='a')
         
 
         logger.header2("Computing the power spectrum.\n")
@@ -853,6 +1127,11 @@ def mapfilter_a(d, m, pspec, N, R, logger, rho0, k_space, params, numparams,\
         git += 1
     
     if params.uncertainty:
+        minimize = nt.steepest_descent(en.egg_u,spam=callbackfunc_u,note=True)
+        u = minimize(x0=u, alpha=numparams.map_alpha, \
+            tol=0.01*numparams.map_tol, clevel=numparams.map_clevel, \
+            limii=numparams.map_iter)[0]
+        en.ueff = u  
         logger.message('Calculating uncertainty map as requested.')
         D_hat = D.hat(domain=s_space,\
         ncpu=numparams.ncpu_a,nrun=numparams.nrun_a)
@@ -873,23 +1152,23 @@ class N_operator(operator):
     
     def _multiply(self, x):
         
-        variance = self.para[0]
+        sigma = self.para[0]
         
-        mask = variance>0
-        variance[variance==0] = 1.
+        mask = sigma>0
+        sigma[sigma==0] = 1.
 
-        Ntemp = diagonal_operator(domain=self.domain, diag = variance)
+        Ntemp = diagonal_operator(domain=self.domain, diag = sigma**2)
 
         return mask * Ntemp(x)
 
     def _inverse_multiply(self, x):
         
-        variance = self.para[0]
+        sigma = self.para[0]
         
-        mask = variance>0
-        variance[variance==0] = 1.
+        mask = sigma>0
+        sigma[sigma==0] = 1.
 
-        Ntemp = diagonal_operator(domain=self.domain, diag = variance)
+        Ntemp = diagonal_operator(domain=self.domain, diag = sigma**2)
 
         return mask * Ntemp.inverse_times(x)
         
@@ -1153,7 +1432,100 @@ class energy_a(object):
         g = self.gradHa(x)
         
         return E,g
+        
+class energy_up(object):
+    
+    def __init__(self, args):
+        self.j = args[0]
+        self.S = args[1]
+        self.M = args[2]
+        self.A = args[3]
+        self.B = args[4]
+        self.NU = args[5]
+        self.seff = args[6]
+        self.ueff = args[7]
+        self.b = self.B-1
 
+    def H(self,x,u):
+        """
+        """
+        I = exp(x)+exp(u)
+        part1 = x.dot(self.S.inverse_times(x.weight(power = 0)))  / 2
+        part2 = self.j.dot(self.A * I)
+        part3 = self.A * I.dot(self.M(self.A * I)) / 2
+        part4 = -u.dot(self.b)-(exp(-u)).dot(self.NU) 
+
+        return part1 - part2 + part3 - part4
+    
+    def gradH_s(self, x,u):
+        """
+        """
+        
+        I = exp(x)+exp(u)
+        temp1 = self.S.inverse_times(x)
+        temp = -self.j * self.A * exp(x) + self.A* exp(x) * \
+            self.M(self.A * I) + temp1
+    
+        return temp
+
+    def gradH_u(self, x,u):
+        """
+        """
+        I = exp(x)+exp(u)
+        temp1 = self.b - self.NU * exp(-u)
+        temp = -self.j * self.A * exp(u) + self.A* exp(u) * \
+            self.M(self.A * I) + temp1
+    
+        return temp
+    
+    def egg_s(self, x):
+        
+        E = self.H(x,self.ueff)
+        gs = self.gradH_s(x,self.ueff)
+        return E,gs
+
+    def egg_u(self, u):
+        
+        E = self.H(self.seff,u)
+        gu = self.gradH_u(self.seff,u)        
+        return E,gu
+        
+
+class energy_u(object):
+    
+    def __init__(self, args):
+        self.j = args[0]
+        self.S = args[1]
+        self.M = args[2]
+        self.A = args[3]
+        self.B = args[4]
+        self.NU = args[5]
+        self.ueff = args[6]
+        self.b = self.B-1
+
+    def H(self, u):
+        """
+        """
+        part2 = self.j.dot(self.A * exp(u))
+        part3 = (self.A * exp(u)).dot(self.M(self.A * exp(u))) / 2 
+        part4 = (u).dot(self.b)+(exp(-u)).dot(self.NU)
+        return part3 + part4 - part2 
+
+    def gradH_u(self,u):
+        """
+        """
+    
+        temp1 = self.B - 1 - self.NU * exp(-u)
+        temp = -self.j * self.A * exp(u) + self.A* exp(u) * \
+            self.M(self.A * (exp(u))) + temp1
+    
+        return temp
+        
+    def egg_u(self, u):
+        
+        E = self.H(u)
+        gu = self.gradH_u(u)        
+        return E,gu  
         
 #-------------------------parameter classes------------------------------------        
         
@@ -1469,10 +1841,35 @@ def callbackfunc(x, i):
            pl.imshow(np.exp(x))
            pl.colorbar()
            pl.title('Iteration' + str(i))
-           pl.savefig('resolve_output_' + str(gsave)+ \
-               "/last_iterations/" + 'iteration'+str(i))
-           np.save('resolve_output_' + str(gsave)+ \
-               "/last_iterations/" + 'iteration' + str(i),x)
+           pl.savefig("resolve_output_"+ str(saveit)+"/last_iterations/iteration"+str(i))
+           np.save("resolve_output_"+ str(saveit)+"/last_iterations/iteration"+str(i),x)
+           
+def callbackfunc_u(x, i):
+    
+    if i%gcallback == 0:
+        print 'Callback at point source iteration' + str(i) 
+        
+        if gsave:
+           pl.figure()
+           pl.imshow(np.exp(x))
+           pl.colorbar()
+           pl.title('Iteration' + str(i)+'_u')
+           pl.savefig("resolve_output_"+ str(saveit)+"/last_iterations/iteration"+str(i)+"_expu")
+           np.save("resolve_output_"+ str(saveit)+"/last_iterations/iteration"+str(i)+"_expu",x)
+               
+def callbackfunc_m(x, i):
+    
+    if i%gcallback == 0:
+        print 'Callback at extended source iteration' + str(i) 
+        
+        if gsave:
+           pl.figure()
+           pl.imshow(np.exp(x))
+           pl.colorbar()
+           pl.title('Iteration' + str(i)+'_m')
+           pl.savefig("resolve_output_"+ str(saveit)+"/last_iterations/iteration"+str(i)+"_expm")
+           np.save("resolve_output_"+ str(saveit)+"/last_iterations/iteration"+str(i)+"_expm",x)           
+
                
 def simulate(params, simparams, logger):
     """
@@ -1482,7 +1879,7 @@ def simulate(params, simparams, logger):
     logger.header2("Simulating signal and data using provided UV-coverage.")
 
     u,v = read_data_from_ms(params.ms)[2:4]
-
+    
     # wide-band imaging
     if params.freq == 'wideband':
         logger.message('Wideband imaging not yet implemented')
@@ -1514,22 +1911,38 @@ def simulate(params, simparams, logger):
     I = field(s_space, random="syn", spec=S.get_power()) + simparams.offset
     np.random.seed()    
     
-    # compact signal
+    # compact signalfor i in range(simparams.nsources):   
+    invgamma  = True
     Ip = np.zeros((simparams.simpix,simparams.simpix))
     if simparams.compact:
         for i in range(simparams.nsources):
-               Ip[np.random.randint(0,high=simparams.simpix),\
-               np.random.randint(0,high=simparams.simpix)] = \
-               np.random.random() * simparams.pfactor * np.max(exp(I))  
-          
-   
+            if invgamma:
+                B = sc.invgamma.rvs(0.5, size = 1,scale = 0.00001)    
+                Ip[np.random.randint(0,high=simparams.simpix),\
+                   np.random.randint(0,high=simparams.simpix)] = \
+                   B 
+            else:
+                Ip[np.random.randint(0,high=simparams.simpix),\
+                   np.random.randint(0,high=simparams.simpix)] = \
+                   np.random.random() * simparams.pfactor * np.max(exp(I)) 
+                  
+    
+    global I0
+    I0 = I
+    Ip_field = field(s_space, val = Ip)
+    global u_simed
+    u_simed = Ip_field
+    Ip_field_smooth =Ip_field.smooth(4.e-6)    
     if params.save:      
         save_results(exp(I),'simulated extended signal','resolve_output_' + \
             str(params.save) + "/general/" + params.save + '_expsimI')
-        if simparams.compact:
-            save_results(Ip,'simulated compact signal','resolve_output_' + \
-                str(params.save) + "/general/" + params.save + '_expsimIp')
-    
+        save_results(Ip,'simulated compact signal','resolve_output_' + \
+            str(params.save) + "/general/" + params.save + '_expsimIp')
+        save_results(Ip_field_smooth,'smoothed simulated compact signal','resolve_output_' + \
+            str(params.save) + "/general/" + params.save + '_expsimIp_smooth')
+        save_results(exp(I)+Ip,'simulated added signal','resolve_output_' + \
+            str(params.save) + "/general/" + params.save + '_expsimIpI')
+            
     if params.save:
         # maximum k-mode and resolution of data
         uvrange = np.array([np.sqrt(u[i]**2 + v[i]**2) for i in range(len(u))])
@@ -1540,17 +1953,26 @@ def simulate(params, simparams, logger):
         save_results(u,'UV','resolve_output_' + str(params.save) + \
             "/general/" +  params.save + "_uvcov", plotpar='o', value2 = v)
 
-    # noise
-    N = diagonal_operator(domain=d_space, diag=simparams.sigma**2)
-    
     # response, no simulated primary beam
     A = 1.
     R = r.response(s_space, sym=False, imp=True, target=d_space, \
                        para=[u,v,A,False])
-                 
+       
+    d_u_space = point_space(len(u[np.sqrt(u**2+v**2)>10000]), datatype = np.complex128)
+    d_m_space = point_space(len(u[np.sqrt(u**2+v**2)<10000]), datatype = np.complex128)
+    Rdirty_u = r.response(s_space, sym=False, imp=True, target=d_u_space, \
+                      para=[u[np.sqrt(u**2+v**2)>10000],v[np.sqrt(u**2+v**2)>10000],A,False])
+    Rdirty_m = r.response(s_space, sym=False, imp=True, target=d_m_space, \
+                      para=[u[np.sqrt(u**2+v**2)<10000],v[np.sqrt(u**2+v**2)<10000],A,False])                      
+    # noise                  
+    N = diagonal_operator(domain=d_space, diag=simparams.sigma**2)
+    N_u = diagonal_operator(domain=d_u_space, diag=simparams.sigma**2)
+    N_m = diagonal_operator(domain=d_m_space, diag=simparams.sigma**2)           
     #Set up Noise
     np.random.seed(simparams.noise_seed)
     n = field(d_space, random="gau", var=N.diag(bare=True))
+    n_u =field(d_u_space, random="gau", var=N_u.diag(bare=True))
+    n_m =field(d_m_space, random="gau", var=N_m.diag(bare=True))
     # revert to unseeded randomness
     np.random.seed()  
     
@@ -1560,29 +1982,51 @@ def simulate(params, simparams, logger):
         save_results(abs(sig.val) / abs(n.val),'Signal to noise', \
            'resolve_output_' + str(params.save) + \
            "/general/" + params.save + '_StoN',log ='semilog')
-        save_results(np.exp(I) + Ip,'Signal', \
-           'resolve_output_' + str(params.save) + \
-           "/general/" + params.save + '_signal')
-
+           
     d = R(exp(I) + Ip) + n
+    d_p = R(exp(I))+n
     
+    bea=field(d_space,val = 1)
+    bea_di = R.adjoint_times(bea)
+    save_results(bea_di,"beam",'resolve_output_' + str(params.save) +\
+    "/general/" + params.save + "_bea_di")   
+    
+    d_u=Rdirty_u(exp(I) + Ip)+n_u
+    d_m=Rdirty_m(exp(I) + Ip)+n_m
+    
+    global di_res
+    di_res = (R.adjoint_times(d)- R.adjoint_times(d_p))* s_space.vol[0] * s_space.vol[1]  
+    di_p = R.adjoint_times(d_p) * s_space.vol[0] * s_space.vol[1]  
+    
+    save_results(di_p,"dirty image p",'resolve_output_' + str(params.save) +\
+    "/general/" + params.save + "_di_p")    
+    save_results(di_res,"dirty image residual",'resolve_output_' + str(params.save) +\
+    "/general/" + params.save + "_di_res")
+    
+    #Ip_field = field(s_space, val = Ip)
+    #d = R(Ip_field) + n
     # reset imsize settings for requested parameters
     s_space = rg_space(params.imsize, naxes=2, dist = params.cellsize, \
         zerocenter=True)
-    R = r.response(s_space, sym=False, imp=True, target=d_space, \
-                       para=[u,v,A,False])
     
     # dirty image for comparison
     di = R.adjoint_times(d) * s_space.vol[0] * s_space.vol[1]
-
+    global di_u
+    di_u = Rdirty_u.adjoint_times(d_u)* s_space.vol[0] * s_space.vol[1]
+    global di_m
+    di_m = Rdirty_m.adjoint_times(d_m)  * s_space.vol[0] * s_space.vol[1]
     # more diagnostics if requested
     if params.save:
         
         # plot the dirty image
         save_results(di,"dirty image",'resolve_output_' + str(params.save) +\
             "/general/" + params.save + "_di")
+        save_results(di_u,"dirty image_uvrange_u",'resolve_output_' + str(params.save) +\
+            "/general/" + params.save + "_di_u")
+        save_results(di_m,"dirty image_uvrange_m",'resolve_output_' + str(params.save) +\
+            "/general/" + params.save + "_di_m")            
     
-    return d, N, R, di, d_space, s_space
+    return d, N, R, di, d_space, s_space 
 
 
 def parse_input_file(infile):
@@ -1595,6 +2039,9 @@ def parse_input_file(infile):
     for row in reader:
         if len(row) != 0 and row[0] != '%':
             parset[row[0]] = row[1]
+            
+    ms = parset['ms']
+    imsize =  parset['imsize']
 
 
     params = parameters(parset['ms'], parset['imsize'], parset['cellsize'],\
@@ -1608,90 +2055,11 @@ def parse_input_file(infile):
                         pasret['save'], parset['callback'], parset['plot'],\
                         parset['simulating'], parset['restfreq'])       
     
-    numparams = numparameters(params, parset)
+    numparams = numparameters(params, **parset)
 
     return params, numparams
 
-
-def write_output_to_fits(m, params, notifier='',mode='I'):
-    """
-    """
-
-    hdu_main = pyfits.PrimaryHDU(m)
-    
-    try:
-        generate_fitsheader(hdu_main, params)
-    except:
-        print "Warning: There was a problem generating the FITS header, no " + \
-            "header information stored!"
-        print "Unexpected error:", sys.exc_info()[0]
-    hdu_list = pyfits.HDUList([hdu_main])
-    if mode == 'I':
-        hdu_list.writeto('resolve_output_' + str(params.save) +\
-                '/' + str(params.save) + '_' + 'expm' + str(notifier) + '.fits', clobber=True)
-    else:
-        hdu_list.writeto('resolve_output_' + str(params.save) +\
-                '/' + str(params.save) + '_' + 'a' + str(notifier) + '.fits', clobber=True)
-
-
-def generate_fitsheader(hdu, params):
-    """
-    """
-
-    
-    today = datetime.datetime.today()
-    
-    #hdu.header = inhead.copy()
-    
-    hdu.header.update('ORIGIN', 'resolve.py', 'Origin of the data set')
-    
-    hdu.header.update('DATE', str(today), 'Date when the file was created')
-    
-    hdu.header.update('NAXIS', 2,
-                      'Number of axes in the data array, must be 2')
-
-    hdu.header.update('BUNIT','JY/PIXEL')
-                      
-    hdu.header.update('NAXIS1', params.imsize,
-                      'Length of the RA axis')
-    
-    hdu.header.update('CTYPE1', 'RA--SIN', 'Axis type')
-    
-    hdu.header.update('CUNIT1', 'RAD', 'Axis units')
-    
-    # In FITS, the first pixel is 1, not 0!!!
-    hdu.header.update('CRPIX1', params.imsize/2, 'Reference pixel')
-    
-    hdu.header.update('CRVAL1', params.summary['field_0']['direction']\
-    ['m0']['value'], 'Reference value')
-    
-    hdu.header.update('CDELT1', params.cellsize, 'Size of pixel bin')
-    
-    hdu.header.update('NAXIS2', params.imsize,
-                      'Length of the RA axis')
-    
-    hdu.header.update('CTYPE2', 'DEC-SIN', 'Axis type')
-    
-    hdu.header.update('CUNIT2', 'RAD', 'Axis units')
-    
-    # In FITS, the first pixel is 1, not 0!!!
-    hdu.header.update('CRPIX2', params.imsize/2, 'Reference pixel')
-    
-    hdu.header.update('CRVAL2', params.summary['field_0']['direction']\
-    ['m1']['value'], 'Reference value')
-    
-    hdu.header.update('CDELT2', params.cellsize, 'Size of pixel bin')
-    
-    hdu.header.add_history('RESOLVE: Reconstruction performed by ' +
-                           'resolve.py.')
-
-    
-    hdu.header.__delitem__('NAXIS4')
-    hdu.header.__delitem__('CTYPE4')
-    hdu.header.__delitem__('CRVAL4')
-    hdu.header.__delitem__('CRPIX4')
-    hdu.header.__delitem__('CDELT4')
-    hdu.header.__delitem__('CUNIT4')  
+  
     
 def save_results(value,title,fname,log = None,value2 = None, \
     value3= None, plotpar = None, rho0 = 1., twoplot=False):
